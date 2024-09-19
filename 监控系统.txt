@@ -1,0 +1,363 @@
+
+
+filebeat + kafka + logstash + Elasticsearch + Kibana日志收集系统搭建
+
+
+
+
+一、介绍
+
+       在日常运维工作中，对于系统和业务日志的处理尤为重要。今天，在这里分享一下自己部署的filebeat + kafka + ELK开源实时日志分析平台的记录过程。
+
+1、ELK介绍
+
+      开源实时日志分析ELK平台能够完美的解决我们上述的问题，ELK由ElasticSearch、Logstash和Kiabana三个开源工具组成：
+     1）ElasticSearch是一个基于Lucene的开源分布式搜索服务器。它的特点有：分布式，零配置，自动发现，索引自动分片，索引副本机制，restful风格接口，多数据源，自动搜索负载等。它提供了一个分布式多用户能力的全文搜索引擎，基于RESTful web接口。Elasticsearch是用Java开发的，并作为Apache许可条款下的开放源码发布，是第二流行的企业搜索引擎。设计用于云计算中，能够达到实时搜索，稳定，可靠，快速，安装使用方便。 
+在elasticsearch中，所有节点的数据是均等的。
+      2）Logstash是一个完全开源的工具，它可以对你的日志进行收集、过滤、分析，支持大量的数据获取方法，并将其存储供以后使用（如搜索）。说到搜索，logstash带有一个web界面，搜索和展示所有日志。一般工作方式为c/s架构，client端安装在需要收集日志的主机上，server端负责将收到的各节点日志进行过滤、修改等操作在一并发往elasticsearch上去。
+      3）Kibana 是一个基于浏览器页面的Elasticsearch前端展示工具，也是一个开源和免费的工具，Kibana可以为 Logstash 和 ElasticSearch 提供的日志分析友好的 Web 界面，可以帮助您汇总、分析和搜索重要数据日志。
+
+2、为什么要采用filebeat
+
+       Logstash是一个功能强大的日志服务，不过会占用较多的系统资源，filebeat作为一个轻量级的日志服务，具有以下特点：
+
+       1）健壮，从没错过任何一个细节
+
+        在读取和转发日志行的过程中，如果被中断，Filebeat会记录中断的位置。并且，当重新联机时，Filebeat会从中断的位置开始。
+
+        2）它不会让你超负荷工作
+
+         当发送数据到Logstash或Elasticsearch时，Filebeat使用一个反压力敏感(backpressure-sensitive)的协议来解释高负荷的数据量。当Logstash数据处理繁忙时，Filebeat放慢它的读取速度。一旦压力解除，Filebeat将恢复到原来的速度，继续传输数据。
+
+         3）使简单的事情保持简单
+
+          Filebeat附带了内部模块(auditd、Apache、Nginx、System和MySQL)，这些模块简化了普通日志格式的聚集、解析和可视化。结合使用基于操作系统的自动默认设置，使用Elasticsearch Ingest Node的管道定义，以及Kibana仪表盘来实现这一点。
+
+3、使用kafka
+
+         使用kafka，有着降低系统耦合度，缓冲消息，提高吞吐方面的作用，并且使系统的扩展变得很容易。
+
+二、部署过程
+
+1、系统环境：2台windows电脑  IP为192.168.1.104和192.168.1.108
+
+                        2台centos为虚拟机 IP为192.168.1.223和192.168.1.184
+
+     各个服务版本为
+
+     
+
+filebeat-5.5.1-windows-x86_64.zip
+filebeat-5.5.1-x86_64.rpm 
+kafka_2.11-2.1.0.tgz
+elasticsearch-6.5.2.zip
+kibana-6.5.2-windows-x86_64.zip
+logstash-6.5.3.tar.gz
+2、filebeat安装
+
+    filebeat会与待收集日志的服务安装在同一个电脑中，因此我这里在centos7（虚拟机）和windows上都安装了filebeat，这里的windows的版本原来采用的是最新的filebeat-6.5.3-windows-x86_64，不过运行一直存在问题，没有办法正常输出，后来采用了filebeat-5.5.1-windows-x86_64版本就可以了，目前还不知道为什么。
+
+2.1 centos7系统安装
+
+系统版本：Centos7
+
+filebeat版本：5.5.1。
+
+wget https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-5.5.1-x86_64.rpm
+
+安装命令
+
+rpm -Uvh filebeat-5.5.1-x86_64.rpm
+
+配置文件路径
+
+/etc/filebeat/filebeat.yml
+
+日志文件路径
+
+/var/log/filebeat
+
+注意 每次新启动都会生成一个新的filebeat，上次启动的会被mv为filebeat.1
+
+启动/停止/重启命令
+
+systemctl start filebeat
+
+systemctl stop filebeat
+
+systemctl restart filebeat
+
+配置文件如下
+
+这个是针对日志比较规范不需要进行处理的配置文件
+
+  #用来设置获取日志的路径
+  paths:
+    - /var/log/messages
+  #增加logtype类型用来区别不同类型的日志
+  fields:
+     logtype: syslog
+  #输出到kafka
+output.kafka:
+   enable: true
+   hosts: ["192.168.1.223:9092"]
+   topic: 'test'
+在另外一台centos上收集的日志格式为多行，具体格式如下：
+
+2018-12-20 14:47:10.430 [debug] <0.15718.7>@ejabberd_receiver:process_data:284 Received XML on stream = <<" ">>
+2018-12-20 14:47:10.430 [debug] <0.15718.7>@shaper:update:120 State: {maxrate,50000,98.93329752244526,1545288424304923}, Size=1
+M=0.010009903127242583, I=6125.801
+2018-12-20 14:47:14.349 [debug] <0.15718.7>@ejabberd_receiver:process_data:284 Received XML on stream = <<"<iq id=\"3030\" type=\"set\" to=\"bc51fe82fa07@use-xmpp-01/camera\" from=\"user@component.use-xmpp-01\"><intamacstream xmlns=\"intamac:intamacstream\" ip=\"192.168.1.233\" port=\"5118\" type=\"start\" timeout=\"0\" quality=\"main\" /></iq>">>
+2018-12-20 14:47:14.349 [debug] <0.15718.7>@shaper:update:120 State: {maxrate,50000,49.54826964755036,1545288430430806}, Size=219
+M=2.191085645023605, I=3918.931
+2018-12-20 14:47:14.350 [debug] <0.15719.7>@ejabberd_router:do_route:351 route
+        from {jid,<<"user">>,<<"component.use-xmpp-01">>,<<>>,<<"user">>,<<"component.use-xmpp-01">>,<<>>}
+        to {jid,<<"bc51fe82fa07">>,<<"use-xmpp-01">>,<<"camera">>,<<"bc51fe82fa07">>,<<"use-xmpp-01">>,<<"camera">>}
+        packet {xmlel,<<"iq">>,[{<<"id">>,<<"3030">>},{<<"type">>,<<"set">>},{<<"to">>,<<"bc51fe82fa07@use-xmpp-01/camera">>},{<<"from">>,<<"user@component.use-xmpp-01">>}],[{xmlel,<<"intamacstream">>,[{<<"xmlns">>,<<"intamac:intamacstream">>},{<<"ip">>,<<"192.168.1.233">>},{<<"port">>,<<"5118">>},{<<"type">>,<<"start">>},{<<"timeout">>,<<"0">>},{<<"quality">>,<<"main">>}],[]}]}
+这样的日志如果不经过处理，会存储多条日志，针对这样类型的日志可采用下面的配置进行筛选和拼接：
+
+配置的规则可以参考filebeat.yml（中文配置详解）
+
+paths:
+    - /opt/ejabberd-16.09/logs/ejabberd.log
+fields:
+    logtype: ejabberdlog
+#正则表达式判断开头，这里只是一个比较简单的判断
+multiline.pattern: '^\s*(20[012]\d-[01]\d-[0123]\d\s\d\d:\d\d:\d\d.\d\d\d)'
+# 是否需要对pattern条件转置使用，不翻转设为true，反转设置为false。
+multiline.negate: true
+# 匹配pattern后，与前面（before）还是后面（after）的内容合并为一条日志
+multiline.match: after
+正则表达式有网站来进行验证，使用方便^_^  正则表达式网站
+
+
+
+2.2 windows系统安装
+
+下载地址：https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-5.5.1-windows-x86_64.zip
+
+配置文件filebeat.yml，配置内容与centos版本的类似，唯一不同的path地址
+
+  paths:
+  #linux和windows的路径不一样的 反斜杠不一样/ \
+    #- /var/log/*.log
+    - d:\logs\wowzastreamingengine_access.log
+  #windows版本直接输出到Logstash 测试另外一种输出方式
+  output.logstash:
+  # The Logstash hosts
+  enabled: true
+  hosts: ["192.168.1.223:5044"]
+通过cmd启动
+
+filebeat.exe -c -e filebeat.yml
+
+运行以后如下：
+
+
+
+3、Elasticsearch 安装
+
+   Elasticsearch 安装见这篇文章Windows环境下安装ElasticSearch以及head插件
+
+   在测试环境Elasticsearch安装在2台window电脑上
+
+4、kafka安装
+
+    kafka基于zookeeper，所以这里需要首先安装zookeeper
+
+    4.1 安装zookeeper
+
+    zookeeper使用的版本是zookeeper-3.4.13 下载地址
+
+    解压tar -zvxf zookeeper-3.4.13.tar.gz 这里没有实现集群，只使用单机版本
+
+    配置文件存放在/conf/目录下，将zoo_sample.cfd文件名称改为zoo.cfg, 采用缺省的配置
+
+    进入bin文件直接运行 
+
+     ./zkServer.sh start #启动
+
+[root@slave bin]# ./zkServer.sh start
+ZooKeeper JMX enabled by default
+Using config: /home/zjs/zookeeper-3.4.13/bin/../conf/zoo.cfg
+Starting zookeeper ... STARTED
+     netstat -tunlp|grep 2181 #查看zookeeper端口
+
+/home/zjs/zookeeper-3.4.13/bin
+[root@slave bin]# netstat -tunlp|grep 2181
+tcp6       0      0 :::2181                 :::*                    LISTEN      14134/java 
+     ./zkServer.sh stop #停止
+
+    4.2 安装运行kafka
+
+    kafka安装在centos虚拟机192.168.1.223上  下载地址
+
+    这里安装的是kafka_2.11-2.1.0.tgz直接解压 tar -zvxf kafka_2.11-2.1.0.tgz
+
+    进入kafka目录，敲入命令 bin/kafka-server-start.sh config/server.properties &
+
+    检测2181与9092端口
+
+[root@slave kafka_2.11-2.1.0]# netstat -tunlp|egrep "(2181|9092)"
+tcp6       0      0 :::9092                 :::*                    LISTEN      36841/java          
+tcp6       0      0 :::2181                 :::*                    LISTEN      32390/java   
+   创建topic名称为test
+
+   bin/kafka-topics.sh --create --zookeeper localhost:2181 --replication-factor 1 --partitions 1 --topic test
+
+   显示所有topic
+
+   bin/kafka-topics.sh --list --zookeeper localhost:2181 
+
+[root@slave kafka_2.11-2.1.0]# bin/kafka-topics.sh --list --zookeeper localhost:2181
+OpenJDK 64-Bit Server VM warning: If the number of processors is expected to increase from one, then you should configure the number of parallel GC threads appropriately using -XX:ParallelGCThreads=N
+__consumer_offsets
+test
+test222
+test888
+5、logstash配置以及安装
+
+      logstash安装在centos虚拟机192.168.1.223上面，下载后直接解压 
+
+      wget https://artifacts.elastic.co/downloads/logstash/logstash-6.5.3.tar.gz 
+
+      tar zvxf logstash-6.5.3.tar.gz
+
+ 5.1  配置文件
+
+       配置文件需要自己写，可参考config里面的logstash-sample.conf，或者直接访问官方的文档
+
+#输入为kafka，topics是test，查询时间是1秒
+input {
+    kafka {
+        enable_auto_commit => true
+        auto_commit_interval_ms => "1000"
+        codec => "json"
+        bootstrap_servers => "192.168.1.223:9092"
+        topics => ["test"]
+    }
+#    beats {
+#        port => 5044
+#    }
+}
+#stdout{ codec=>rubydebug}用来调试使用，运行时会输出到屏幕，调试完成注释掉
+#在filebeat里面我们定义了fields的logtype，在这里可以用来区别不同的日志
+#index为ES的数据库index名
+output {
+ 
+   stdout{ codec=>rubydebug}
+   if [fields][logtype] == "syslog"{
+      elasticsearch {
+         hosts => ["192.168.1.108:9200"]
+         index => "zjslog-%{+YYYY.MM.dd}"
+      }
+   }
+   if [fields][logtype] == "ejabberdlog"{
+      elasticsearch {
+         hosts => ["192.168.1.108:9200"]
+         index => "ejabberdlog-%{+YYYY.MM.dd}"
+      }
+   }
+}
+5.2 运行logstash
+
+./logstash -f file.conf   file.conf放在logstash相同目录中
+
+可以看出前三条都是定义了fields的logtype的，filebeat通过kafka到logstash，最后一条没有定义的是来自windows的filebeat，没有经过kafka，直接到logstash，也没有定义fields的logtype
+
+{
+        "source" => "/opt/ejabberd-16.09/logs/ejabberd.log",
+          "beat" => {
+        "hostname" => "testhcl.szinfinova.com",
+         "version" => "5.5.1",
+            "name" => "testhcl.szinfinova.com"
+    },
+          "type" => "log",
+    "input_type" => "log",
+          "tags" => [
+        [0] "beats_input_codec_plain_applied"
+    ],
+      "@version" => "1",
+    "@timestamp" => 2018-12-21T02:37:55.664Z,
+          "host" => "testhcl.szinfinova.com",
+        "fields" => {
+        "logtype" => "ejabberdlog"
+    },
+       "message" => "2018-12-21 10:29:47.059 [debug] <0.26871.7>@ejabberd_router_multicast:do_route:211 route_multicast\n\tfrom 6ceceba257fb@use-xmpp-01/smarthub\n\tdomain use-xmpp-01\n\tdestinations [<<\"6ceceba257fb@use-xmpp-01\">>,<<\"user@component.use-xmpp-01\">>]\n\tpacket {xmlel,<<\"presence\">>,[{<<\"id\">>,<<\"2\">>}],[]}",
+        "offset" => 59572
+}
+{
+        "source" => "/opt/ejabberd-16.09/logs/ejabberd.log",
+          "beat" => {
+        "hostname" => "testhcl.szinfinova.com",
+            "name" => "testhcl.szinfinova.com",
+         "version" => "5.5.1"
+    },
+          "type" => "log",
+    "input_type" => "log",
+          "tags" => [
+        [0] "beats_input_codec_plain_applied"
+    ],
+      "@version" => "1",
+    "@timestamp" => 2018-12-21T02:37:55.664Z,
+          "host" => "testhcl.szinfinova.com",
+        "fields" => {
+        "logtype" => "ejabberdlog"
+    },
+       "message" => "2018-12-21 10:29:47.059 [debug] <0.26871.7>@ejabberd_router:do_route:351 route\n\tfrom {jid,<<\"6ceceba257fb\">>,<<\"use-xmpp-01\">>,<<\"smarthub\">>,<<\"6ceceba257fb\">>,<<\"use-xmpp-01\">>,<<\"smarthub\">>}\n\tto {jid,<<\"6ceceba257fb\">>,<<\"use-xmpp-01\">>,<<>>,<<\"6ceceba257fb\">>,<<\"use-xmpp-01\">>,<<>>}\n\tpacket {xmlel,<<\"presence\">>,[{<<\"id\">>,<<\"2\">>}],[]}",
+        "offset" => 59916
+}
+{
+        "source" => "/var/log/messages",
+          "beat" => {
+        "hostname" => "slave.szinfinova.com",
+            "name" => "slave.szinfinova.com",
+         "version" => "5.5.1"
+    },
+          "type" => "log",
+        "fields" => {
+        "logtype" => "syslog"
+    },
+    "input_type" => "log",
+       "message" => "Dec 21 10:46:19 slave systemd: Starting filebeat...",
+        "offset" => 102668,
+      "@version" => "1",
+    "@timestamp" => 2018-12-21T02:46:19.321Z
+}
+{
+        "source" => "d:\\logs\\wowzastreamingengine_access.log",
+          "beat" => {
+        "hostname" => "march020-PC",
+         "version" => "5.5.1",
+            "name" => "march020-PC"
+    },
+          "type" => "log",
+          "host" => "march020-PC",
+    "input_type" => "log",
+          "tags" => [
+        [0] "beats_input_codec_plain_applied"
+    ],
+       "message" => "2018-12-06\t10:28:15\tCST\tcomment\tserver\tWARN\t200\t-\tDvrStreamStoreBase.changeCurrentTime[live/_definst_/30bc51fe82fa07.sdp/30bc51fe82fa07.sdp.0] : Current DVR time tried to move backwards.  Ignored new time.  Old time=750600372.  New time=730103355.\t-\t-\t-\t832795.109\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-",
+      "@version" => "1",
+        "offset" => 130293,
+    "@timestamp" => 2018-12-21T02:50:08.983Z
+}
+通过ES head查看日志
+
+
+
+6、Kibana安装配置
+
+Kibana安装在windows 192.168.1.104机子上，下载的版本是kibana-6.5.2-windows-x86_64， 下载地址
+
+下载后解压，配置文件在config下面kibana.yml，只需配置ES的ip即可
+
+elasticsearch.url: "http://192.168.1.108:9200"
+直接在cmd命令行中运行，kibana.bat 即可
+
+访问http://localhost:5601/
+
+Kibana的使用参考这篇文章     https://www.cnblogs.com/cjsblog/p/9476813.html
+————————————————
+
+                           
